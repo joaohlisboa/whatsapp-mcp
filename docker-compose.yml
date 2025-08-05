@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  whatsapp-bridge:
+    build:
+      context: ./whatsapp-bridge
+      dockerfile: Dockerfile
+    container_name: whatsapp-bridge
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the store directory to persist WhatsApp authentication and messages
+      - ./whatsapp-bridge/store:/app/store
+    environment:
+      - CGO_ENABLED=1
+    restart: unless-stopped
+    networks:
+      - whatsapp-network
+    healthcheck:
+      test: ["CMD-SHELL", "ls /app/store || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  whatsapp-mcp-server:
+    build:
+      context: ./whatsapp-mcp-server
+      dockerfile: Dockerfile
+    container_name: whatsapp-mcp-server
+    ports:
+      - "8081:8081"
+    volumes:
+      # Mount the store directory to access the SQLite databases
+      - ./whatsapp-bridge/store:/app/store:ro
+    depends_on:
+      whatsapp-bridge:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - whatsapp-network
+    environment:
+      - WHATSAPP_BRIDGE_HOST=whatsapp-bridge
+      - WHATSAPP_BRIDGE_PORT=8080
+      - MESSAGES_DB_PATH=/app/store/messages.db
+
+networks:
+  whatsapp-network:
+    driver: bridge
+

@@ -2,13 +2,22 @@ import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
+import os
 import os.path
 import requests
 import json
 import audio
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+# Use environment variables for Docker compatibility, with fallbacks for local development
+MESSAGES_DB_PATH = os.getenv(
+    'MESSAGES_DB_PATH', 
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
+)
+
+# For Docker: use service name, for local: use localhost
+WHATSAPP_BRIDGE_HOST = os.getenv('WHATSAPP_BRIDGE_HOST', 'localhost')
+WHATSAPP_BRIDGE_PORT = os.getenv('WHATSAPP_BRIDGE_PORT', '8080')
+WHATSAPP_API_BASE_URL = f"http://{WHATSAPP_BRIDGE_HOST}:{WHATSAPP_BRIDGE_PORT}/api"
 
 @dataclass
 class Message:
