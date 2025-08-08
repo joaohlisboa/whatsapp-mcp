@@ -10,7 +10,7 @@ This guide explains how to run the WhatsApp MCP Server using Docker Compose.
 
 ## Quick Start
 
-1. **Start the services:**
+1. **Start the WhatsApp Bridge:**
    ```bash
    docker-compose up -d
    ```
@@ -21,7 +21,7 @@ This guide explains how to run the WhatsApp MCP Server using Docker Compose.
    docker-compose logs -f whatsapp-bridge
    ```
    
-   Scan the QR code with your WhatsApp mobile app to authenticate.
+   Scan the QR code with your WhatsApp mobile app to authenticate. If the camera is not reading the QR code in the terminal, use docker logs.
 
 3. **Check service status:**
    ```bash
@@ -30,14 +30,13 @@ This guide explains how to run the WhatsApp MCP Server using Docker Compose.
 
 ## Services
 
-### WhatsApp Bridge
+### WhatsApp Bridge (Docker)
 - **Container**: `whatsapp-bridge`
 - **Port**: 8080
 - **Purpose**: Connects to WhatsApp Web API and stores messages in SQLite
 
-### WhatsApp MCP Server
-- **Container**: `whatsapp-mcp-server`  
-- **Port**: 8081
+### WhatsApp MCP Server (Local)
+- **No container** (runs locally with `uv run main.py`)
 - **Purpose**: Provides MCP tools for Claude to interact with WhatsApp data
 
 ## Data Persistence
@@ -46,15 +45,12 @@ The SQLite databases (`whatsapp.db` and `messages.db`) are stored in the `./what
 
 ## Configuration for Claude Desktop
 
-### Option 1: Run MCP Server in Docker (Not Recommended)
-Docker exec doesn't work well with Claude Desktop's MCP integration. This approach is not recommended.
-
-### Option 2: Hybrid Approach (Recommended)
+### Default: Hybrid Approach (Recommended)
 Run only the WhatsApp bridge in Docker and the MCP server locally:
 
 1. **Start only the WhatsApp bridge:**
    ```bash
-   docker-compose up -d whatsapp-bridge
+   docker-compose up -d
    ```
 
 2. **Run the MCP server locally:**
@@ -89,7 +85,7 @@ Run only the WhatsApp bridge in Docker and the MCP server locally:
    }
    ```
 
-### Option 3: Full Local Development
+### Alternative: Full Local Development
 For the standard setup (as described in the main README), run both services locally without Docker.
 
 ## Useful Commands
