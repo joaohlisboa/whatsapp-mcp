@@ -11,6 +11,10 @@ services:
       - ./whatsapp-bridge/store:/app/store
     environment:
       - CGO_ENABLED=1
+      - YOUR_PHONE=${YOUR_PHONE}
+      - ALLOWED_TOOLS=${ALLOWED_TOOLS:-*}
+    env_file:
+      - .env
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ls /app/store || exit 1"]
