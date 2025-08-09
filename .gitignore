@@ -3,3 +3,41 @@ claude_desktop_config.json
 whatsapp.log
 .DS_Store
 .claude/commands
+
+# Environment configuration
+.env
+.env.local
+
+# Service configuration files
+com.*.claude-bridge.plist
+*.plist
+
+# Virtual environment
+.venv/
+venv/
+
+# Logs
+*.log
+logs/
+Library/Logs/ClaudeBridge/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# WhatsApp Bridge store
+whatsapp-bridge/store/
