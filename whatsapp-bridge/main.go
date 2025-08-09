@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -426,6 +427,12 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// Extract text content
 	content := extractTextContent(msg.Message)
 
+	// Check if this is a self-message for Claude processing
+	if isClaudeRequest(msg) && content != "" {
+		addClaudeRequest(content, msg.Info.Timestamp, logger)
+		return // Don't store self-messages in regular chat history
+	}
+
 	// Extract media info
 	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
 
@@ -483,6 +490,17 @@ type DownloadMediaResponse struct {
 	Filename string `json:"filename,omitempty"`
 	Path     string `json:"path,omitempty"`
 }
+
+// ClaudeRequest represents a request for Claude processing
+type ClaudeRequest struct {
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+	Processed bool   `json:"processed"`
+}
+
+// Global queue for Claude requests
+var claudeQueue = make([]ClaudeRequest, 0)
+var queueMutex sync.Mutex
 
 // Store additional media info in the database
 func (store *MessageStore) StoreMediaInfo(id, chatJID, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
@@ -774,6 +792,59 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for Claude requests - polling endpoint
+	http.HandleFunc("/api/claude/pending", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		queueMutex.Lock()
+		defer queueMutex.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if len(claudeQueue) > 0 {
+			// Return first unprocessed message
+			for i, req := range claudeQueue {
+				if !req.Processed {
+					claudeQueue[i].Processed = true // Mark as being processed
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"has_pending": true,
+						"message":     req.Message,
+						"timestamp":   req.Timestamp,
+					})
+					return
+				}
+			}
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{"has_pending": false})
+	})
+
+	// Handler for Claude responses
+	http.HandleFunc("/api/claude/respond", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req SendMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+
+		// Send the response message
+		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, "")
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(SendMessageResponse{
+			Success: success,
+			Message: message,
+		})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
@@ -784,6 +855,51 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
+}
+
+// Check if message is a self-message for Claude processing
+func isClaudeRequest(msg *events.Message) bool {
+	YOUR_PHONE := os.Getenv("YOUR_PHONE")
+	if YOUR_PHONE == "" {
+		// Log error but don't crash - just return false
+		fmt.Println("⚠️  WARNING: YOUR_PHONE environment variable not set. Claude requests will not work.")
+		return false
+	}
+	return msg.Info.IsFromMe &&
+		msg.Info.Sender.User == YOUR_PHONE &&
+		msg.Info.Chat.User == YOUR_PHONE
+}
+
+// Add a Claude request to the processing queue
+func addClaudeRequest(message string, timestamp time.Time, logger waLog.Logger) {
+	queueMutex.Lock()
+	defer queueMutex.Unlock()
+
+	// Clean old processed requests (keep queue small)
+	newQueue := make([]ClaudeRequest, 0)
+	for _, req := range claudeQueue {
+		if !req.Processed {
+			newQueue = append(newQueue, req)
+		}
+	}
+
+	// Add new request
+	newQueue = append(newQueue, ClaudeRequest{
+		Message:   strings.TrimSpace(message),
+		Timestamp: timestamp.Format(time.RFC3339),
+		Processed: false,
+	})
+
+	claudeQueue = newQueue
+	logger.Infof("📱 Added Claude request to queue: %s", message[:minInt(len(message), 50)])
+}
+
+// Helper function to get minimum of two integers
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func main() {

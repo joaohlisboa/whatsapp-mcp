@@ -14,6 +14,12 @@ Here's an example of what you can do when it's connected to Claude.
 
 > *Caution:* as with many MCP servers, the WhatsApp MCP is subject to [the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). This means that project injection could lead to private data exfiltration.
 
+### Claude Code Bridge (Optional)
+- **Remote Access**: Chat with Claude Code through WhatsApp by messaging yourself
+- **Background Service**: Runs automatically on macOS startup
+- **Full MCP Support**: Access all your configured MCP servers through WhatsApp
+- **Auto-Recovery**: Automatically restarts if the service crashes
+
 ## Installation
 
 ### Prerequisites
@@ -23,13 +29,14 @@ Here's an example of what you can do when it's connected to Claude.
 - Anthropic Claude Desktop app (or Cursor)
 - UV (Python package manager), install with `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - FFmpeg (_optional_) - Only needed for audio messages. If you want to send audio files as playable WhatsApp voice messages, they must be in `.ogg` Opus format. With FFmpeg installed, the MCP server will automatically convert non-Opus audio files. Without FFmpeg, you can still send raw audio files using the `send_file` tool.
+- Claude Code (_optional_) - For interacting with Claude via messaging yourself on WhatsApp
 
 ### Steps
 
 1. **Clone this repository**
 
    ```bash
-   git clone https://github.com/lharries/whatsapp-mcp.git
+   git clone https://github.com/joaohlisboa/whatsapp-mcp
    cd whatsapp-mcp
    ```
 
@@ -83,6 +90,89 @@ Here's an example of what you can do when it's connected to Claude.
    Open Claude Desktop and you should now see WhatsApp as an available integration.
 
    Or restart Cursor.
+
+## Claude Code Bridge Setup (Optional)
+
+Enable remote access to Claude Code via WhatsApp self-messages.
+
+### Setup
+
+1. **Configure environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env and configure:
+   # - YOUR_PHONE: Your WhatsApp number
+   # - ALLOWED_TOOLS: Tools Claude can use (default: "*" for all)
+   nano .env
+   ```
+
+2. **Install the bridge service**
+   ```bash
+   ./manage-claude-bridge.sh install
+   ./manage-claude-bridge.sh start
+   ```
+
+3. **Run with Docker** (alternative to step 2 in Quick Start)
+   ```bash
+   docker-compose up -d
+   ```
+
+4. **Test it**
+   
+   Message yourself on WhatsApp: "What's 2+2?"
+   
+   You should receive: "🤖 Claude: 4"
+
+### Service Management
+
+```bash
+./manage-claude-bridge.sh status    # Check status
+./manage-claude-bridge.sh logs      # View logs
+./manage-claude-bridge.sh restart   # Restart service
+./manage-claude-bridge.sh stop      # Stop service
+```
+
+### Tool Permissions
+
+Configure which tools Claude can use via the `ALLOWED_TOOLS` environment variable:
+
+```bash
+# In your .env file:
+
+# Allow all tools (default)
+ALLOWED_TOOLS="*"
+
+# Allow only specific tools
+ALLOWED_TOOLS="Read Write Edit"
+
+# Allow specific Bash commands with wildcards
+ALLOWED_TOOLS="Bash(ls:*) Bash(pwd) Read"
+
+# Allow specific MCP servers
+ALLOWED_TOOLS="mcp__whatsapp mcp__google-workspace"
+
+# Disable all tools (text responses only)
+ALLOWED_TOOLS=""
+```
+
+## MCP Tools Available
+
+- `search_contacts` - Search by name or phone number
+- `list_messages` - Retrieve messages with filters
+- `list_chats` - List available chats
+- `get_chat` - Get chat information
+- `send_message` - Send text messages
+- `send_file` - Send media files
+- `send_audio_message` - Send voice messages
+- `download_media` - Download received media
+
+## Architecture
+
+```
+WhatsApp Web API ←→ Go Bridge ←→ SQLite ←→ Python MCP Server ←→ Claude/Cursor
+                                     ↑
+                        Optional: Claude Code Bridge (for self-messages)
+```
 
 ### Windows Compatibility
 
@@ -181,3 +271,16 @@ By default, just the metadata of the media is stored in the local database. The 
 - **WhatsApp Out of Sync**: If your WhatsApp messages get out of sync with the bridge, delete both database files (`whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`) and restart the bridge to re-authenticate.
 
 For additional Claude Desktop integration troubleshooting, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues). The documentation includes helpful tips for checking logs and resolving common issues.
+
+
+### Bridge Issues
+```bash
+# Check service logs
+./manage-claude-bridge.sh logs
+
+# Test bridge API
+curl http://localhost:8080/api/claude/pending
+
+# Check Docker logs
+docker-compose logs -f whatsapp-bridge
+```
