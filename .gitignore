@@ -1,3 +1,4 @@
+.env
 *.db
 claude_desktop_config.json
 whatsapp.log

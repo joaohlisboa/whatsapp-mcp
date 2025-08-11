@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
@@ -200,6 +201,31 @@ type SendMessageRequest struct {
 	Recipient string `json:"recipient"`
 	Message   string `json:"message"`
 	MediaPath string `json:"media_path,omitempty"`
+}
+
+// ClaudeRequest represents the request to Claude Code HTTP server
+type ClaudeRequest struct {
+	Prompt string   `json:"prompt"`
+	Args   []string `json:"args"`
+}
+
+// ClaudeResponse represents the response from Claude Code HTTP server
+type ClaudeResponse struct {
+	Type          string  `json:"type"`
+	Subtype       string  `json:"subtype"`
+	IsError       bool    `json:"is_error"`
+	DurationMs    int     `json:"duration_ms"`
+	DurationApiMs int     `json:"duration_api_ms"`
+	NumTurns      int     `json:"num_turns"`
+	Result        string  `json:"result"`
+	SessionId     string  `json:"session_id"`
+	TotalCostUsd  float64 `json:"total_cost_usd"`
+	Usage         struct {
+		InputTokens         int `json:"input_tokens"`
+		CacheCreationTokens int `json:"cache_creation_input_tokens"`
+		CacheReadTokens     int `json:"cache_read_input_tokens"`
+		OutputTokens        int `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 // Function to send a WhatsApp message
@@ -468,6 +494,135 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, sender, content)
 		}
 	}
+
+	// Check if this is a message from myself to myself (self-chat)
+	if client.Store.ID != nil && msg.Info.IsFromMe && content != "" {
+		selfJID := types.JID{
+			User:   client.Store.ID.User,
+			Server: "s.whatsapp.net",
+		}
+
+		// Check if the chat is my self-chat
+		if chatJID == selfJID.String() {
+			fmt.Printf("Routing to Claude Code: %s\n", content)
+
+			// Process in a goroutine to avoid blocking
+			go func(messageContent string, messageID string, jid types.JID) {
+
+				// Call Claude server
+				response, err := callClaudeServer(messageContent)
+				if err != nil {
+					logger.Errorf("Failed to call Claude server for message %s: %v", messageID, err)
+					response = fmt.Sprintf("❌ Error: %v", err)
+				}
+
+				// Send response (split if too long)
+				const maxLength = 4000
+				if len(response) > maxLength {
+					// Split into chunks
+					for i := 0; i < len(response); i += maxLength {
+						end := i + maxLength
+						if end > len(response) {
+							end = len(response)
+						}
+						chunk := response[i:end]
+
+						// Add continuation marker for non-first chunks
+						if i > 0 {
+							chunk = fmt.Sprintf("... (continued)\n%s", chunk)
+						}
+
+						replyMsg := &waProto.Message{
+							Conversation: proto.String(chunk),
+						}
+
+						if _, err := client.SendMessage(context.Background(), jid, replyMsg); err != nil {
+							logger.Errorf("Failed to send response chunk: %v", err)
+						}
+
+						// Small delay between chunks to avoid rate limiting
+						time.Sleep(500 * time.Millisecond)
+					}
+				} else {
+					// Send as single message
+					replyMsg := &waProto.Message{
+						Conversation: proto.String(response),
+					}
+
+					if _, err := client.SendMessage(context.Background(), jid, replyMsg); err != nil {
+						logger.Errorf("Failed to send response: %v", err)
+					} else {
+						fmt.Printf("Claude response sent for message %s: %d characters\n", messageID, len(response))
+					}
+				}
+			}(content, msg.Info.ID, selfJID)
+		}
+	}
+}
+
+// callClaudeServer sends a message to the Claude Code HTTP server and returns the response
+func callClaudeServer(prompt string) (string, error) {
+	// Get configuration from environment
+	claudeServer := os.Getenv("CLAUDE_SERVER_URL")
+	if claudeServer == "" {
+		claudeServer = "http://host.docker.internal:8888/claude"
+	}
+	
+	allowedTools := os.Getenv("CLAUDE_ALLOWED_TOOLS")
+	if allowedTools == "" {
+		allowedTools = "mcp__whatsapp"
+	}
+	
+	// Prepare the request
+	req := ClaudeRequest{
+		Prompt: prompt,
+		Args:   []string{"--allowedTools", allowedTools},
+	}
+
+	// Marshal the request to JSON
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("error marshaling request: %v", err)
+	}
+
+	// Create the HTTP request
+	httpReq, err := http.NewRequest("POST", claudeServer, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("error creating request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Create a client with timeout
+	client := &http.Client{
+		Timeout: 300 * time.Second,
+	}
+
+	// Send the request
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("error sending request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error reading response: %v", err)
+	}
+
+	// Parse the response
+	var claudeResp ClaudeResponse
+	err = json.Unmarshal(body, &claudeResp)
+	if err != nil {
+		return "", fmt.Errorf("error parsing response: %v", err)
+	}
+
+	// Check for errors in the response
+	if claudeResp.IsError {
+		return "", fmt.Errorf("Claude returned an error: %s", claudeResp.Result)
+	}
+
+	return claudeResp.Result, nil
 }
 
 // DownloadMediaRequest represents the request body for the download media API

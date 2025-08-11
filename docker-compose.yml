@@ -9,6 +9,8 @@ services:
     volumes:
       # Mount the store directory to persist WhatsApp authentication and messages
       - ./whatsapp-bridge/store:/app/store
+    env_file:
+      - .env
     environment:
       - CGO_ENABLED=1
     restart: unless-stopped

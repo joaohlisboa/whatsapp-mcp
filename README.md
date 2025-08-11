@@ -33,7 +33,20 @@ Here's an example of what you can do when it's connected to Claude.
    cd whatsapp-mcp
    ```
 
-2. **Run the WhatsApp bridge**
+2. **Configure environment variables (optional)**
+
+   If you want to enable Claude integration for self-chat:
+
+   ```bash
+   cp .env.example .env
+   # Edit .env to customize Claude server URL and allowed tools
+   ```
+
+   Available environment variables:
+   - `CLAUDE_SERVER_URL`: URL for Claude Code HTTP server (default: `http://host.docker.internal:8888/claude` for Docker, use `http://localhost:8888/claude` for local)
+   - `CLAUDE_ALLOWED_TOOLS`: Tools Claude can use (default: `mcp__whatsapp`, can add more like `mcp__whatsapp,mcp__google-workspace`)
+
+3. **Run the WhatsApp bridge**
 
    Navigate to the whatsapp-bridge directory and run the Go application:
 
