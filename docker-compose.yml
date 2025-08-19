@@ -9,6 +9,8 @@ services:
     volumes:
       # Mount the store directory to persist WhatsApp authentication and messages
       - ./whatsapp-bridge/store:/app/store
+      # Mount prompts directory for daily summary templates
+      - ./prompts:/app/prompts
     env_file:
       - .env
     environment:

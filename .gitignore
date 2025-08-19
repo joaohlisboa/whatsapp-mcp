@@ -3,4 +3,6 @@
 claude_desktop_config.json
 whatsapp.log
 .DS_Store
-.claude/commands
+.claude/
+prompts/
+whatsapp-bridge/store

@@ -45,6 +45,11 @@ Here's an example of what you can do when it's connected to Claude.
    Available environment variables:
    - `CLAUDE_SERVER_URL`: URL for Claude Code HTTP server (default: `http://host.docker.internal:8888/claude` for Docker, use `http://localhost:8888/claude` for local)
    - `CLAUDE_ALLOWED_TOOLS`: Tools Claude can use (default: `mcp__whatsapp`, can add more like `mcp__whatsapp,mcp__google-workspace`)
+   - `DAILY_SUMMARY_ENABLED`: Enable automated daily summaries (default: `false`)
+   - `DAILY_SUMMARY_TIME`: Time to run daily summary in HH:MM format (default: `22:00`)
+   - `DAILY_SUMMARY_GROUP_JID`: WhatsApp group JID to analyze
+   - `DAILY_SUMMARY_SEND_TO`: Where to send summary (`self` or specific JID)
+   - `DAILY_SUMMARY_TIMEZONE`: Timezone for scheduling (default: `America/Sao_Paulo`)
 
 3. **Run the WhatsApp bridge**
 
@@ -171,6 +176,55 @@ You can send various media types to your WhatsApp contacts:
 #### Media Downloading
 
 By default, just the metadata of the media is stored in the local database. The message will indicate that media was sent. To access this media you need to use the download_media tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the meda), this downloads the media and then returns the file path which can be then opened or passed to another tool.
+
+### Daily Summary Feature
+
+The WhatsApp bridge includes an automated daily summary feature that analyzes group conversations and generates executive summaries using Claude.
+
+#### How It Works
+
+- **Scheduled Analysis**: Runs at a configurable time each day (default: 22:00 Brazil time)
+- **Group Targeting**: Analyzes messages from a specific WhatsApp group
+- **AI-Powered Summary**: Uses Claude to generate executive summaries focusing on:
+  - Key decisions and strategic discussions
+  - Pending actions and responsibilities
+  - Business metrics and financial data
+  - Next steps and follow-ups
+
+#### Configuration
+
+Configure the daily summary feature via environment variables in your `.env` file:
+
+```env
+# Enable/disable the feature
+DAILY_SUMMARY_ENABLED=true
+
+# Time to run (24-hour format)
+DAILY_SUMMARY_TIME=22:00
+
+# Target group JID
+DAILY_SUMMARY_GROUP_JID=<GROUPJID>@g.us
+
+# Where to send summary ("self" or specific JID)
+DAILY_SUMMARY_SEND_TO=self
+
+# Timezone for accurate scheduling
+DAILY_SUMMARY_TIMEZONE=America/Sao_Paulo
+```
+
+#### Custom Prompt Templates
+
+You can customize the analysis prompt by creating a template file at `prompts/daily-summary.md`. The template supports placeholders:
+- `{{MESSAGES}}` - Replaced with formatted messages from the day
+- `{{DATE}}` - Replaced with the current date
+
+See `prompts-example/daily-summary.md` for a complete template example that you can copy to `prompts/daily-summary.md` and customize for your needs.
+
+#### Logging and Monitoring
+
+- Daily summary execution logs: `store/daily-summary.log`
+- Cron daemon logs: `store/cron.log`
+- Configuration is displayed on container startup
 
 ## Technical Details
 
