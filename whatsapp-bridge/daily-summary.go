@@ -54,6 +54,12 @@ type ClaudeResponse struct {
 	} `json:"usage"`
 }
 
+// TopicSegment represents a topic with its associated messages
+type TopicSegment struct {
+	Messages []int  `json:"messages"`
+	Summary  string `json:"summary"`
+}
+
 func main() {
 	logger := waLog.Stdout("DailySummary", "INFO", true)
 	logger.Infof("Starting daily summary generation...")
@@ -119,6 +125,26 @@ func main() {
 	if err != nil {
 		logger.Errorf("Failed to send summary: %v", err)
 		return
+	}
+
+	// Add episodes to Graphiti knowledge graph
+	logger.Infof("Starting Graphiti episode addition...")
+
+	// Get group name for better organization
+	groupName := getGroupName(groupJID, logger)
+
+	// Segment messages by topic
+	topicSegments, err := segmentMessagesByTopic(messages, groupName, startOfDay.Format("2006-01-02"), logger)
+	if err != nil {
+		logger.Warnf("Failed to segment messages by topic: %v", err)
+	} else {
+		// Add episodes to Graphiti
+		err = addEpisodesToGraphiti(topicSegments, groupName, startOfDay.Format("2006-01-02"), logger)
+		if err != nil {
+			logger.Warnf("Failed to add episodes to Graphiti: %v", err)
+		} else {
+			logger.Infof("Successfully added conversation episodes to Graphiti knowledge graph")
+		}
 	}
 
 	logger.Infof("Daily summary completed successfully")
@@ -224,17 +250,17 @@ func loadPromptTemplate(messages []DailySummaryMessage, date string) (string, er
 	var promptTemplate string
 	if err != nil {
 		// Use default prompt if file doesn't exist
-		promptTemplate = `Você é um assistente executivo analisando as conversas do dia no grupo Avante. 
-Por favor, forneça:
+		promptTemplate = `You are an executive assistant analyzing conversations in the group for the day. 
+Please provide:
 
-1. **Resumo Executivo**: Principais discussões e decisões
-2. **Ações Pendentes**: Tarefas identificadas e responsáveis  
-3. **Métricas**: Empresas mencionadas, valuations discutidos
-4. **Follow-ups Necessários**: Próximos passos sugeridos
+1. **Executive Summary**: Main discussions and decisions
+2. **Pending Actions**: Tasks identified and responsible  
+3. **Metrics**: Companies mentioned, valuations discussed
+4. **Follow-ups Needed**: Suggested next steps
 
-Seja direto e conciso. Use dados e números sempre que mencionados.
+Be direct and concise. Use data and numbers whenever mentioned.
 
-Mensagens do dia ({{DATE}}):
+Messages of the day ({{DATE}}):
 {{MESSAGES}}`
 	} else {
 		promptTemplate = string(promptBytes)
@@ -316,6 +342,13 @@ func callClaudeServer(prompt string) (string, error) {
 		return "", fmt.Errorf("error parsing response: %v", err)
 	}
 
+	// Log the response for debugging (but truncate if very long)
+	responseText := claudeResp.Result
+	if len(responseText) > 500 {
+		responseText = responseText[:500] + "... [truncated]"
+	}
+	fmt.Printf("Claude MCP response: %s\n", responseText)
+
 	// Check for errors in the response
 	if claudeResp.IsError {
 		return "", fmt.Errorf("Claude returned an error: %s", claudeResp.Result)
@@ -388,7 +421,7 @@ func sendToRecipient(summary, recipient string, logger waLog.Logger) error {
 
 	// Prepare summary message with header
 	now := time.Now()
-	summaryMessage := fmt.Sprintf("📊 *Resumo Diário - Avante*\n📅 %s\n\n%s",
+	summaryMessage := fmt.Sprintf("📊 *Daily Summary*\n📅 %s\n\n%s",
 		now.Format("2006-01-02"), summary)
 
 	// Split message if too long
@@ -433,4 +466,335 @@ func sendToRecipient(summary, recipient string, logger waLog.Logger) error {
 
 	logger.Infof("Summary sent to %s (%d characters)", recipient, len(summaryMessage))
 	return nil
+}
+
+// getGroupName retrieves the friendly name for a group from the database
+func getGroupName(groupJID string, logger waLog.Logger) string {
+	// Open SQLite database for chats
+	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	if err != nil {
+		logger.Warnf("Failed to open database to get group name: %v", err)
+		return extractGroupIDFromJID(groupJID)
+	}
+	defer db.Close()
+
+	var name string
+	err = db.QueryRow("SELECT name FROM chats WHERE jid = ?", groupJID).Scan(&name)
+	if err == nil && name != "" {
+		return name
+	}
+
+	// If no name found, extract a simple identifier from the JID
+	return extractGroupIDFromJID(groupJID)
+}
+
+// extractGroupIDFromJID extracts a simple group identifier from the JID
+func extractGroupIDFromJID(groupJID string) string {
+	// Format: 120363414686079039@g.us -> Group_120363414686079039
+	if strings.Contains(groupJID, "@g.us") {
+		parts := strings.Split(groupJID, "@")
+		if len(parts) > 0 {
+			return "Group_" + parts[0]
+		}
+	}
+	return groupJID
+}
+
+// getUserRealName returns the real name for the user by looking up their JID in the database
+func getUserRealName(userJID string, logger waLog.Logger) string {
+	// Try to get name from chats table
+	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	if err != nil {
+		logger.Warnf("Failed to open database to get user real name: %v", err)
+		return userJID
+	}
+	defer db.Close()
+
+	// Look up user's name in chats table
+	// The userJID might already have @s.whatsapp.net or might be just the phone number
+	var name string
+	var searchJID string
+	if strings.Contains(userJID, "@") {
+		searchJID = userJID
+	} else {
+		searchJID = userJID + "@s.whatsapp.net"
+	}
+
+	err = db.QueryRow("SELECT name FROM chats WHERE jid = ?", searchJID).Scan(&name)
+	if err == nil && name != "" {
+		return name
+	}
+
+	// Fallback: extract phone number if it's a JID format
+	if strings.Contains(userJID, "@") {
+		parts := strings.Split(userJID, "@")
+		return parts[0]
+	}
+
+	return userJID
+}
+
+// segmentMessagesByTopic analyzes messages and groups them by topic using Claude
+func segmentMessagesByTopic(messages []DailySummaryMessage, groupName, date string, logger waLog.Logger) (map[string][]DailySummaryMessage, error) {
+	if len(messages) == 0 {
+		return make(map[string][]DailySummaryMessage), nil
+	}
+
+	// Load topic segmentation prompt template
+	prompt, err := loadTopicSegmentationPrompt(messages, date)
+	if err != nil {
+		logger.Warnf("Failed to load topic segmentation prompt, using fallback: %v", err)
+		// Fallback: put all messages in one topic
+		fallbackTopic := fmt.Sprintf("%s_daily_conversation", groupName)
+		return map[string][]DailySummaryMessage{fallbackTopic: messages}, nil
+	}
+
+	// Call Claude API for topic segmentation
+	response, err := callClaudeServer(prompt)
+	if err != nil {
+		logger.Warnf("Failed to segment topics, using fallback: %v", err)
+		// Fallback: put all messages in one topic
+		fallbackTopic := fmt.Sprintf("%s_daily_conversation", groupName)
+		return map[string][]DailySummaryMessage{fallbackTopic: messages}, nil
+	}
+
+	// Parse the JSON response
+	var topicSegments map[string]TopicSegment
+	err = json.Unmarshal([]byte(response), &topicSegments)
+	if err != nil {
+		logger.Warnf("Failed to parse topic segmentation response, using fallback: %v", err)
+		// Fallback: put all messages in one topic
+		fallbackTopic := fmt.Sprintf("%s_daily_conversation", groupName)
+		return map[string][]DailySummaryMessage{fallbackTopic: messages}, nil
+	}
+
+	// Convert to final format with actual message objects
+	result := make(map[string][]DailySummaryMessage)
+	for topicName, segment := range topicSegments {
+		var topicMessages []DailySummaryMessage
+		for _, msgIndex := range segment.Messages {
+			if msgIndex >= 0 && msgIndex < len(messages) {
+				topicMessages = append(topicMessages, messages[msgIndex])
+			}
+		}
+		if len(topicMessages) > 0 {
+			result[topicName] = topicMessages
+		}
+	}
+
+	// If no valid topics found, use fallback
+	if len(result) == 0 {
+		fallbackTopic := fmt.Sprintf("%s_daily_conversation", groupName)
+		result[fallbackTopic] = messages
+	}
+
+	logger.Infof("Segmented messages into %d topics", len(result))
+	return result, nil
+}
+
+// loadTopicSegmentationPrompt loads and formats the topic segmentation prompt
+func loadTopicSegmentationPrompt(messages []DailySummaryMessage, date string) (string, error) {
+	// Try to load custom prompt template
+	promptPath := "prompts/topic-segmentation.md"
+	promptBytes, err := os.ReadFile(promptPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read topic segmentation prompt: %v", err)
+	}
+
+	promptTemplate := string(promptBytes)
+
+	// Format messages as numbered list for segmentation analysis
+	var messageLines []string
+	for i, msg := range messages {
+		direction := "←"
+		if msg.IsFromMe {
+			direction = "→"
+		}
+		messageLines = append(messageLines, fmt.Sprintf("%d. [%s] %s %s: %s",
+			i, msg.Timestamp, direction, msg.Sender, msg.Content))
+	}
+	messagesText := strings.Join(messageLines, "\n")
+
+	// Replace placeholders
+	prompt := strings.ReplaceAll(promptTemplate, "{{MESSAGES}}", messagesText)
+	prompt = strings.ReplaceAll(prompt, "{{DATE}}", date)
+
+	return prompt, nil
+}
+
+// loadAddEpisodePrompt loads and formats the add episode prompt template
+func loadAddEpisodePrompt(episodeName, topicName, groupName, date, episodeBody, sourceDescription string) (string, error) {
+	// Try to load custom prompt template
+	promptPath := "prompts/add-episode.md"
+	promptBytes, err := os.ReadFile(promptPath)
+
+	var promptTemplate string
+	if err != nil {
+		// Use default prompt if file doesn't exist
+		promptTemplate = `Add this WhatsApp conversation segment to Graphiti's memory:
+
+**Instructions:**
+Use the mcp__graphiti__add_memory tool with the following parameters:
+- name: "{{EPISODE_NAME}}"
+- episode_body: "{{EPISODE_BODY}}"
+- source: "message"
+- source_description: "{{SOURCE_DESCRIPTION}}"
+
+DO NOT SEND group_id as a parameter.
+After adding the episode, confirm that it was successfully added to the knowledge graph.`
+	} else {
+		promptTemplate = string(promptBytes)
+	}
+
+	// Replace placeholders
+	prompt := strings.ReplaceAll(promptTemplate, "{{EPISODE_NAME}}", episodeName)
+	prompt = strings.ReplaceAll(prompt, "{{TOPIC_NAME}}", topicName)
+	prompt = strings.ReplaceAll(prompt, "{{GROUP_NAME}}", groupName)
+	prompt = strings.ReplaceAll(prompt, "{{DATE}}", date)
+	prompt = strings.ReplaceAll(prompt, "{{EPISODE_BODY}}", strings.ReplaceAll(episodeBody, `"`, `\"`))
+	prompt = strings.ReplaceAll(prompt, "{{SOURCE_DESCRIPTION}}", sourceDescription)
+
+	return prompt, nil
+}
+
+// addEpisodesToGraphiti adds each topic segment as an episode to Graphiti
+func addEpisodesToGraphiti(topicSegments map[string][]DailySummaryMessage, groupName, date string, logger waLog.Logger) error {
+	successCount := 0
+	totalTopics := len(topicSegments)
+
+	// Get user's real name from the first "IsFromMe" message we find
+	var userRealName string
+	for _, messages := range topicSegments {
+		for _, msg := range messages {
+			if msg.IsFromMe {
+				userRealName = getUserRealName(msg.Sender, logger)
+				break
+			}
+		}
+		if userRealName != "" {
+			break
+		}
+	}
+
+	for topicName, messages := range topicSegments {
+		// Format messages for Graphiti (message format: "sender: message")
+		var episodeLines []string
+		for _, msg := range messages {
+			senderName := msg.Sender
+			if msg.IsFromMe {
+				senderName = userRealName
+			}
+			episodeLines = append(episodeLines, fmt.Sprintf("%s: %s", senderName, msg.Content))
+		}
+		episodeBody := strings.Join(episodeLines, "\n")
+
+		// Create episode name
+		episodeName := fmt.Sprintf("%s", topicName)
+		sourceDescription := fmt.Sprintf("WhatsApp_%s", groupName)
+
+		// Load and format the add episode prompt
+		addEpisodePrompt, err := loadAddEpisodePrompt(episodeName, topicName, groupName, date, episodeBody, sourceDescription)
+		if err != nil {
+			logger.Warnf("Failed to load add episode prompt for %s: %v", episodeName, err)
+			continue
+		}
+
+		// Log the exact prompt being sent for debugging
+		logger.Infof("Sending prompt to MCP server for episode %s:", episodeName)
+		logger.Infof("--- START PROMPT ---")
+		logger.Infof("%s", addEpisodePrompt)
+		logger.Infof("--- END PROMPT ---")
+
+		// Call Claude with Graphiti tools enabled
+		_, err = callClaudeServerWithGraphiti(addEpisodePrompt)
+		if err != nil {
+			logger.Warnf("Failed to add episode %s to Graphiti: %v", episodeName, err)
+			continue
+		}
+
+		successCount++
+		logger.Infof("Successfully added episode %s to Graphiti", episodeName)
+	}
+
+	logger.Infof("Added %d/%d episodes to Graphiti successfully", successCount, totalTopics)
+
+	if successCount == 0 {
+		return fmt.Errorf("failed to add any episodes to Graphiti")
+	}
+
+	return nil
+}
+
+// callClaudeServerWithGraphiti calls Claude server with Graphiti tools enabled
+func callClaudeServerWithGraphiti(prompt string) (string, error) {
+	// Get configuration from environment
+	claudeServer := os.Getenv("CLAUDE_SERVER_URL")
+	if claudeServer == "" {
+		claudeServer = "http://host.docker.internal:8888/claude"
+	}
+
+	// Use both WhatsApp and Graphiti tools
+	allowedTools := "mcp__whatsapp,mcp__graphiti"
+
+	// Prepare the request
+	req := ClaudeRequest{
+		Prompt: prompt,
+		Args:   []string{"--allowedTools", allowedTools},
+	}
+
+	// Log the exact request being sent for debugging
+	fmt.Printf("Sending request to Claude MCP server: %s\n", claudeServer)
+	fmt.Printf("Allowed tools: %s\n", allowedTools)
+
+	// Marshal the request to JSON
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("error marshaling request: %v", err)
+	}
+
+	// Create the HTTP request
+	httpReq, err := http.NewRequest("POST", claudeServer, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", fmt.Errorf("error creating request: %v", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Create a client with timeout
+	client := &http.Client{
+		Timeout: 300 * time.Second,
+	}
+
+	// Send the request
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("error sending request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error reading response: %v", err)
+	}
+
+	// Parse the response
+	var claudeResp ClaudeResponse
+	err = json.Unmarshal(body, &claudeResp)
+	if err != nil {
+		return "", fmt.Errorf("error parsing response: %v", err)
+	}
+
+	// Log the response for debugging (but truncate if very long)
+	responseText := claudeResp.Result
+	if len(responseText) > 500 {
+		responseText = responseText[:500] + "... [truncated]"
+	}
+	fmt.Printf("Claude MCP response: %s\n", responseText)
+
+	// Check for errors in the response
+	if claudeResp.IsError {
+		return "", fmt.Errorf("Claude returned an error: %s", claudeResp.Result)
+	}
+
+	return claudeResp.Result, nil
 }
