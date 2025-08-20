@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"math/rand"
 	"net/http"
@@ -203,30 +202,6 @@ type SendMessageRequest struct {
 	MediaPath string `json:"media_path,omitempty"`
 }
 
-// ClaudeRequest represents the request to Claude Code HTTP server
-type ClaudeRequest struct {
-	Prompt string   `json:"prompt"`
-	Args   []string `json:"args"`
-}
-
-// ClaudeResponse represents the response from Claude Code HTTP server
-type ClaudeResponse struct {
-	Type          string  `json:"type"`
-	Subtype       string  `json:"subtype"`
-	IsError       bool    `json:"is_error"`
-	DurationMs    int     `json:"duration_ms"`
-	DurationApiMs int     `json:"duration_api_ms"`
-	NumTurns      int     `json:"num_turns"`
-	Result        string  `json:"result"`
-	SessionId     string  `json:"session_id"`
-	TotalCostUsd  float64 `json:"total_cost_usd"`
-	Usage         struct {
-		InputTokens         int `json:"input_tokens"`
-		CacheCreationTokens int `json:"cache_creation_input_tokens"`
-		CacheReadTokens     int `json:"cache_read_input_tokens"`
-		OutputTokens        int `json:"output_tokens"`
-	} `json:"usage"`
-}
 
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
@@ -560,70 +535,6 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	}
 }
 
-// callClaudeServer sends a message to the Claude Code HTTP server and returns the response
-func callClaudeServer(prompt string) (string, error) {
-	// Get configuration from environment
-	claudeServer := os.Getenv("CLAUDE_SERVER_URL")
-	if claudeServer == "" {
-		claudeServer = "http://host.docker.internal:8888/claude"
-	}
-	
-	allowedTools := os.Getenv("CLAUDE_ALLOWED_TOOLS")
-	if allowedTools == "" {
-		allowedTools = "mcp__whatsapp"
-	}
-	
-	// Prepare the request
-	req := ClaudeRequest{
-		Prompt: prompt,
-		Args:   []string{"--allowedTools", allowedTools},
-	}
-
-	// Marshal the request to JSON
-	jsonData, err := json.Marshal(req)
-	if err != nil {
-		return "", fmt.Errorf("error marshaling request: %v", err)
-	}
-
-	// Create the HTTP request
-	httpReq, err := http.NewRequest("POST", claudeServer, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("error creating request: %v", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Create a client with timeout
-	client := &http.Client{
-		Timeout: 300 * time.Second,
-	}
-
-	// Send the request
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return "", fmt.Errorf("error sending request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Read the response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("error reading response: %v", err)
-	}
-
-	// Parse the response
-	var claudeResp ClaudeResponse
-	err = json.Unmarshal(body, &claudeResp)
-	if err != nil {
-		return "", fmt.Errorf("error parsing response: %v", err)
-	}
-
-	// Check for errors in the response
-	if claudeResp.IsError {
-		return "", fmt.Errorf("Claude returned an error: %s", claudeResp.Result)
-	}
-
-	return claudeResp.Result, nil
-}
 
 // DownloadMediaRequest represents the request body for the download media API
 type DownloadMediaRequest struct {

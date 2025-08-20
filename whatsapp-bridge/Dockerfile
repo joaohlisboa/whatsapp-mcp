@@ -12,10 +12,10 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Enable CGO and build both applications
+# Enable CGO and build container applications
 ENV CGO_ENABLED=1
-RUN go build -o whatsapp-bridge main.go
-RUN go build -o daily-summary daily-summary.go
+RUN go build -o whatsapp-bridge main.go claude.go
+RUN go build -o daily-summary daily-summary.go daily-summary-utils.go claude.go
 
 FROM alpine:latest
 
